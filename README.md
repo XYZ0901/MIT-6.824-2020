@@ -43,3 +43,9 @@ type Task struct {
 
 
 
+## LAB2 Raft
+
+整个lab2是要求你实现一个精简版Raft，只实现Raft最核心的两个RPC----RequestVote和AppendEntries.对于Raft算法，已经有很多开源了的，例如[braft](https://github.com/baidu/braft) [ectd](https://github.com/etcd-io/etcd) 等。这些都是非常值得学习的算法库，但对初学者却不够友好，因为通常在工业生产中会对Raft做一些细节上的改动，如PreVoted，同时为了性能做了复杂的并发模型并且整个库还包括其他部分如存储系统。所以824的这个lab2是很适合Raft的初学者加深对基础算法的理解。
+
+
+
