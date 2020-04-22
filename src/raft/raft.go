@@ -296,13 +296,14 @@ func (rf* Raft) electionTimer() {
 func (rf* Raft) heartBeatTimer() {
 	//send heart per 150 milseconds
 	for rf.Role() == LEADER {
+		time.Sleep(time.Millisecond * 150)
 		for i := 0; i < len(rf.peers); i++ {
 			if i == rf.me {
 				continue
 			}
 			go rf.RequestAppendNewEntries(i,true)
 		}
-		time.Sleep(time.Millisecond * 150)
+		//time.Sleep(time.Millisecond * 150)
 	}
 }
 

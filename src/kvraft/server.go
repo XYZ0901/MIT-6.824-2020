@@ -3,10 +3,12 @@ package kvraft
 import (
 	"../labgob"
 	"../labrpc"
-	"log"
 	"../raft"
+	"log"
+	"os"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 const Debug = 0
@@ -16,14 +18,32 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 		log.Printf(format, a...)
 	}
 	return
+
 }
 
+const (
+	PUT             = "Put"
+	APPEND			= "Append"
+	GET             = "Get"
+)
 
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	OpType string
+	Key string
+	Value string
+	Time int64
+	ClientId int64
 }
+
+
+type Result struct {
+	Err Err
+	Res string
+}
+
 
 type KVServer struct {
 	mu      sync.Mutex
@@ -33,18 +53,205 @@ type KVServer struct {
 	dead    int32 // set by Kill()
 
 	maxraftstate int // snapshot if log grows this big
-
 	// Your definitions here.
+
+	storage map[string]string
+	clientTimeStamp map[int64]int64
+	//key is the index of LogEntry,
+	//when finished the op,
+	//notify the waiting client with the res
+	clientChannels map[int]chan Result
+	isLeader bool
+
+}
+
+func (kv* KVServer) recordClient(index int64) {
+	kv.mu.Lock()
+	_,find := kv.clientTimeStamp[index]
+	if find == false {
+		kv.clientTimeStamp[index] = 0
+	}
+	kv.mu.Unlock()
+}
+//when we are not leader send res to waiting rpc handler
+func (kv* KVServer) updateState(isLeader bool) {
+	if !isLeader {
+		kv.mu.Lock()
+		if len(kv.clientChannels) != 0{
+
+		}
+		kv.mu.Unlock()
+	}
+
+
 }
 
 
+func (kv* KVServer) getState() bool {
+	_,isLeader := kv.rf.GetState()
+	return isLeader
+}
+
+func (kv* KVServer) Run(op *Op) Result {
+	res := Result{}
+	res.Err = OK
+	kv.mu.Lock()
+	if op.OpType == GET {
+		_,ok := kv.storage[op.Key]
+		if ok {
+			res.Res = kv.storage[op.Key]
+		} else {
+			res.Err = ErrNoKey
+		}
+	} else {
+		if op.OpType == PUT {
+			time,find := kv.clientTimeStamp[op.ClientId]
+			if !find || (find && time < op.Time) {
+				kv.storage[op.Key] = op.Value
+				kv.clientTimeStamp[op.ClientId] = op.Time
+			}
+		} else if op.OpType == APPEND {
+			time,find := kv.clientTimeStamp[op.ClientId]
+			if !find || (find && time < op.Time) {
+				kv.clientTimeStamp[op.ClientId] = op.Time
+				_,ok := kv.storage[op.Key]
+				if ok {
+					kv.storage[op.Key] += op.Value
+				} else {
+					kv.storage[op.Key] = op.Value
+				}
+			}
+
+		}  else {
+			os.Exit(-1)
+			DPrintf("invalid op in Run() ")
+		}
+
+	}
+	kv.mu.Unlock()
+	return res
+}
+
+func (kv* KVServer) GetClientChannel(index int) (bool,chan Result) {
+	var ok bool
+	var ch chan Result
+	kv.mu.Lock()
+	ch,ok = kv.clientChannels[index]
+	kv.mu.Unlock()
+	return ok,ch
+}
+func (kv* KVServer) InsertClientChannel(index int,ch chan Result) {
+	kv.mu.Lock()
+	_,ok := kv.clientChannels[index]
+	if ok {
+		DPrintf("insert ch error : ch exits \n")
+		os.Exit(-1)
+	}
+	kv.clientChannels[index] = ch
+	kv.mu.Unlock()
+}
+func (kv* KVServer) RemoveClientChannel(index int) {
+	kv.mu.Lock()
+	delete(kv.clientChannels,index)
+	kv.mu.Unlock()
+}
+func (kv* KVServer) doOp() {
+
+	for  {
+		applyMsg := <- kv.applyCh
+		op := applyMsg.Command.(Op)
+		res := kv.Run(&op)
+		isLeader := kv.getState()
+		kv.updateState(isLeader)
+		if isLeader {
+			ok,ch := kv.GetClientChannel(applyMsg.CommandIndex)
+			kv.RemoveClientChannel(applyMsg.CommandIndex)
+			if ok {
+				ch <- res
+			} else {
+				//DPrintf("error : could not find notify channel\n")
+				//os.Exit(-1)
+			}
+		} else {
+
+		}
+	}
+}
+
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+	kv.recordClient(args.Src)
+	op := Op{GET,args.Key,"",0,args.Src}
+	index,_,isLeader := kv.rf.Start(op)
+	kv.updateState(isLeader)
+	if !isLeader {
+		//DPrintf("received Get %v not leader ",kv.me)
+		reply.Err = ErrWrongLeader
+		return
+	} else {
+		ch := make(chan Result)
+		kv.InsertClientChannel(index,ch)
+		go kv.waitComplete(index)
+		res,ok := <- ch
+		kv.RemoveClientChannel(index)
+		if ok {
+			reply.Err = res.Err
+			reply.Value = res.Res
+		} else {
+			DPrintf("server is not leader now")
+			reply.Err = ErrWrongLeader
+		}
+	}
+}
+
+
+func (kv* KVServer) waitComplete(index int) {
+	time.Sleep(time.Millisecond * 700)
+	ok,ch := kv.GetClientChannel(index)
+	kv.RemoveClientChannel(index)
+	if ok {
+		res := Result{ErrWrongLeader,""}
+		ch <- res
+	} else {
+		//has finished
+		return
+	}
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+	kv.recordClient(args.Src)
+	var op Op
+	if args.Op == PUT {
+		op = Op{PUT,args.Key,args.Value,args.Time,args.Src}
+	} else if args.Op == APPEND {
+		op = Op{APPEND,args.Key,args.Value,args.Time,args.Src}
+	} else {
+		DPrintf("invalid op in PutAppend\n")
+	}
+	//op := Op{GET,args.Key,""}
+	index,_,isLeader := kv.rf.Start(op)
+	kv.updateState(isLeader)
+	if !isLeader {
+		//DPrintf("received PutAppend %v not leader ",kv.me)
+		reply.Err = ErrWrongLeader
+		return
+	} else {
+		ch := make(chan Result)
+		kv.InsertClientChannel(index,ch)
+		go kv.waitComplete(index)
+		res,ok := <- ch
+		kv.RemoveClientChannel(index)
+		if ok {
+			reply.Err = res.Err
+		} else {
+			DPrintf("server is not leader now")
+			reply.Err = ErrWrongLeader
+		}
+	}
 }
+
+
 
 //
 // the tester calls Kill() when a KVServer instance won't
@@ -96,6 +303,10 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
-
+	kv.storage = make(map[string]string)
+	kv.clientChannels = make(map[int]chan Result)
+	kv.isLeader = false
+	kv.clientTimeStamp = make(map[int64]int64)
+	go kv.doOp()
 	return kv
 }
