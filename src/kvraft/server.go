@@ -4,6 +4,8 @@ import (
 	"../labgob"
 	"../labrpc"
 	"../raft"
+	"bytes"
+	"fmt"
 	"log"
 	"os"
 	"sync"
@@ -55,21 +57,22 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 	// Your definitions here.
 
-	storage map[string]string
-	clientTimeStamp map[int64]int64
+	Storage map[string]string
+	ClientTimeStamp map[int64]int64
 	//key is the index of LogEntry,
 	//when finished the op,
 	//notify the waiting client with the res
 	clientChannels map[int]chan Result
 	isLeader bool
+	LastAppliedIndex int
 
 }
 
 func (kv* KVServer) recordClient(index int64) {
 	kv.mu.Lock()
-	_,find := kv.clientTimeStamp[index]
+	_,find := kv.ClientTimeStamp[index]
 	if find == false {
-		kv.clientTimeStamp[index] = 0
+		kv.ClientTimeStamp[index] = 0
 	}
 	kv.mu.Unlock()
 }
@@ -86,39 +89,39 @@ func (kv* KVServer) updateState(isLeader bool) {
 
 }
 
-
 func (kv* KVServer) getState() bool {
 	_,isLeader := kv.rf.GetState()
 	return isLeader
 }
 
-func (kv* KVServer) Run(op *Op) Result {
+func (kv* KVServer) Run(op *Op,index int) Result {
 	res := Result{}
 	res.Err = OK
 	kv.mu.Lock()
 	if op.OpType == GET {
-		_,ok := kv.storage[op.Key]
+		_,ok := kv.Storage[op.Key]
 		if ok {
-			res.Res = kv.storage[op.Key]
+			res.Res = kv.Storage[op.Key]
 		} else {
 			res.Err = ErrNoKey
 		}
+		kv.LastAppliedIndex = index
 	} else {
 		if op.OpType == PUT {
-			time,find := kv.clientTimeStamp[op.ClientId]
+			time,find := kv.ClientTimeStamp[op.ClientId]
 			if !find || (find && time < op.Time) {
-				kv.storage[op.Key] = op.Value
-				kv.clientTimeStamp[op.ClientId] = op.Time
+				kv.Storage[op.Key] = op.Value
+				kv.ClientTimeStamp[op.ClientId] = op.Time
 			}
 		} else if op.OpType == APPEND {
-			time,find := kv.clientTimeStamp[op.ClientId]
+			time,find := kv.ClientTimeStamp[op.ClientId]
 			if !find || (find && time < op.Time) {
-				kv.clientTimeStamp[op.ClientId] = op.Time
-				_,ok := kv.storage[op.Key]
+				kv.ClientTimeStamp[op.ClientId] = op.Time
+				_,ok := kv.Storage[op.Key]
 				if ok {
-					kv.storage[op.Key] += op.Value
+					kv.Storage[op.Key] += op.Value
 				} else {
-					kv.storage[op.Key] = op.Value
+					kv.Storage[op.Key] = op.Value
 				}
 			}
 
@@ -126,7 +129,7 @@ func (kv* KVServer) Run(op *Op) Result {
 			os.Exit(-1)
 			DPrintf("invalid op in Run() ")
 		}
-
+		kv.LastAppliedIndex = index
 	}
 	kv.mu.Unlock()
 	return res
@@ -159,8 +162,13 @@ func (kv* KVServer) doOp() {
 
 	for  {
 		applyMsg := <- kv.applyCh
+		if applyMsg.DoSnapshot {
+			kv.readSnapshot()
+			continue
+		}
 		op := applyMsg.Command.(Op)
-		res := kv.Run(&op)
+		res := kv.Run(&op,applyMsg.CommandIndex)
+		go kv.saveSnapshot()
 		isLeader := kv.getState()
 		kv.updateState(isLeader)
 		if isLeader {
@@ -253,6 +261,44 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 
 
+func (kv* KVServer) saveSnapshot() {
+	if kv.rf.RaftStateSize() >= kv.maxraftstate && kv.maxraftstate != -1 {
+		kv.mu.Lock()
+		w := new(bytes.Buffer)
+		e := labgob.NewEncoder(w)
+		e.Encode(kv.Storage)
+		e.Encode(kv.ClientTimeStamp)
+		index := kv.LastAppliedIndex
+		data := w.Bytes()
+		kv.mu.Unlock()
+		kv.rf.SaveStateAndSnapShot(data,index)
+	}
+
+}
+
+func (kv* KVServer) readSnapshot() {
+	data,index := kv.rf.ReadSnapshot()
+	if index <= 0 || data == nil || len(data) < 1 {
+		return
+	}
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	Storage := make(map[string]string)
+	ClientTimeStamp := make(map[int64]int64)
+
+	if d.Decode(&Storage) != nil ||
+	   d.Decode(&ClientTimeStamp) != nil {
+		fmt.Printf("decode error")
+		os.Exit(-1)
+	} else {
+		kv.mu.Lock()
+		kv.Storage = Storage
+		kv.ClientTimeStamp = ClientTimeStamp
+		kv.LastAppliedIndex = index
+		kv.mu.Unlock()
+	}
+}
+
 //
 // the tester calls Kill() when a KVServer instance won't
 // be needed again. for your convenience, we supply
@@ -303,10 +349,11 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
-	kv.storage = make(map[string]string)
+	kv.Storage = make(map[string]string)
 	kv.clientChannels = make(map[int]chan Result)
 	kv.isLeader = false
-	kv.clientTimeStamp = make(map[int64]int64)
+	kv.ClientTimeStamp = make(map[int64]int64)
+	kv.readSnapshot()
 	go kv.doOp()
 	return kv
 }
