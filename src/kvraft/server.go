@@ -85,8 +85,6 @@ func (kv* KVServer) updateState(isLeader bool) {
 		}
 		kv.mu.Unlock()
 	}
-
-
 }
 
 func (kv* KVServer) getState() bool {
@@ -143,6 +141,7 @@ func (kv* KVServer) GetClientChannel(index int) (bool,chan Result) {
 	kv.mu.Unlock()
 	return ok,ch
 }
+
 func (kv* KVServer) InsertClientChannel(index int,ch chan Result) {
 	kv.mu.Lock()
 	_,ok := kv.clientChannels[index]
