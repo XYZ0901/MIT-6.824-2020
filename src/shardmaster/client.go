@@ -6,11 +6,22 @@ package shardmaster
 
 import (
 	"../labrpc"
+	"log"
 	"os"
 )
 import "time"
 import "crypto/rand"
 import "math/big"
+
+const Debug = 0
+
+func DPrintf(format string, a ...interface{}) (n int, err error) {
+	if Debug > 0 {
+		log.Printf(format, a...)
+	}
+	return
+
+}
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd

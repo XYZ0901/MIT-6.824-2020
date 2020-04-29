@@ -27,6 +27,7 @@ const (
 	PUT             = "Put"
 	APPEND			= "Append"
 	GET             = "Get"
+
 )
 
 type Op struct {

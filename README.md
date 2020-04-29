@@ -1,6 +1,15 @@
-# MIT 6.824 LAB 记录
+# MIT 6.824 
 
-寒假之前做了下6.824 2012的yfs，受疫情影响一直没返校，macos上对实验所需要的fuse支持较差，经常莫名其妙的编译错误。于是开始抽空完成一下2020的lab，并记录下所遇到的坑.
+赶在返校的最后十几天完成了[6.824: Distributed Systems](https://pdos.csail.mit.edu/6.824/schedule.html)，最后剩2个Challenge和思路返校之后慢慢补吧。
+
+## Status
+
+- [x] Lab 1
+- [x] Lab 2
+- [x] Lab 3
+- [x] Lab 4
+  - [ ] Challenge 1
+  - [ ] Challenge 2
 
 ## LAB1 MAPREDUCE
 
